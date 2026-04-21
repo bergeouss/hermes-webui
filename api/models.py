@@ -124,10 +124,16 @@ class Session:
     def save(self, touch_updated_at: bool = True, skip_index: bool = False) -> None:
         if touch_updated_at:
             self.updated_at = time.time()
-        self.path.write_text(
-            json.dumps(self.__dict__, ensure_ascii=False, indent=2),
-            encoding='utf-8',
-        )
+        payload = json.dumps(self.__dict__, ensure_ascii=False, indent=2)
+        # Atomic write: write to .tmp then os.replace to avoid truncated JSON
+        # on crash mid-write (critical for periodic checkpoints, Issue #765).
+        _tmp = self.path.with_suffix('.json.tmp')
+        try:
+            _tmp.write_text(payload, encoding='utf-8')
+            os.replace(_tmp, self.path)
+        except Exception:
+            # If atomic write fails, fall back to direct write
+            self.path.write_text(payload, encoding='utf-8')
         if not skip_index:
             _write_session_index(updates=[self])
 

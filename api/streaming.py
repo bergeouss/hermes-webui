@@ -797,6 +797,7 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
     old_exec_ask = None
     old_session_key = None
     old_hermes_home = None
+    _checkpoint_stop = None  # Periodic checkpoint control (Issue #765)
 
     # ── MCP Server Discovery (lazy import, idempotent) ──
     # discover_mcp_tools() is called here (rather than at server startup) so that
@@ -948,12 +949,15 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
             _token_sent = False  # tracks whether any streamed tokens were sent
             _reasoning_text = ''  # accumulates reasoning/thinking trace for persistence
             _live_tool_calls = []  # tool progress fallback when final messages omit tool IDs
+            _streaming_text = []  # Issue #765: buffer for incremental persistence
 
             def on_token(text):
                 nonlocal _token_sent
                 if text is None:
                     return  # end-of-stream sentinel
                 _token_sent = True
+                # Issue #765: accumulate streamed text for incremental checkpoint
+                _streaming_text.append(str(text))
                 put('token', {'text': text})
 
             def on_reasoning(text):
@@ -1014,6 +1018,32 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
                                 put('approval', p)
                     except ImportError:
                         pass
+                    # Issue #765: flush streamed text and record tool call
+                    # incrementally so the checkpoint timer has real data to save.
+                    _flush_partial = ''.join(_streaming_text).strip()
+                    if _flush_partial:
+                        s.messages.append({
+                            'role': 'assistant',
+                            'content': _flush_partial,
+                            'timestamp': int(time.time()),
+                            '_partial': True,
+                        })
+                        _streaming_text.clear()
+                    _tcid = f'_partial_{name}_{len(s.messages)}'
+                    s.messages.append({
+                        'role': 'assistant',
+                        'content': '',
+                        'tool_calls': [{'id': _tcid, 'function': {'name': name, 'arguments': json.dumps(args or {})}}],
+                        'timestamp': int(time.time()),
+                        '_partial': True,
+                    })
+                    s.messages.append({
+                        'role': 'tool',
+                        'tool_call_id': _tcid,
+                        'content': preview or f'Running {name}...',
+                        'timestamp': int(time.time()),
+                        '_partial': True,
+                    })
                     return
 
                 if event_type == 'tool.completed':
@@ -1174,23 +1204,47 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
             if _personality_prompt:
                 agent.ephemeral_system_prompt = _personality_prompt
             _previous_messages = list(s.messages or [])
+
+            # ── Pre-save user message for crash recovery (Issue #765) ──
+            # Append the user's message to s.messages, save, then remove it
+            # so run_conversation() doesn't get a duplicate in conversation_history.
+            # The user message is passed separately via user_message parameter.
+            _user_msg = {'role': 'user', 'content': workspace_ctx + msg_text, 'timestamp': int(time.time())}
+            if attachments:
+                _user_msg['attachments'] = attachments
+            s.messages.append(_user_msg)
+            s.save(skip_index=True)
+            s.messages.pop()  # Remove before run_conversation() to avoid duplication
+
             # ── Periodic checkpoint during streaming (Issue #765) ──
-            # Saves session to disk every 15 seconds so that messages are
-            # not lost if the server restarts mid-task.  The session index
-            # rebuild is skipped for performance; the final s.save() at task
-            # completion handles the full persist + index update.
+            # Saves session to disk every 15 seconds if messages have grown.
+            # on_token/on_tool callbacks incrementally append to s.messages,
+            # so this timer captures real progress.  Also flushes any buffered
+            # streaming text that hasn't been flushed by on_tool yet.
+            # The session index rebuild is skipped for performance; the final
+            # s.save() at task completion handles the full persist + index update.
             _checkpoint_stop = threading.Event()
             _checkpoint_msg_count = [len(s.messages or [])]
 
             def _periodic_checkpoint():
                 while not _checkpoint_stop.wait(15):
                     try:
+                        # Flush any buffered streaming text as an assistant message
+                        _buf = ''.join(_streaming_text).strip()
+                        if _buf:
+                            s.messages.append({
+                                'role': 'assistant',
+                                'content': _buf,
+                                'timestamp': int(time.time()),
+                                '_partial': True,
+                            })
+                            _streaming_text.clear()
                         _cur = len(s.messages or [])
                         if _cur > _checkpoint_msg_count[0]:
                             s.save(skip_index=True)
                             _checkpoint_msg_count[0] = _cur
-                    except Exception:
-                        pass
+                    except Exception as _ckpt_err:
+                        logger.debug("Periodic checkpoint failed: %s", _ckpt_err)
 
             _ckpt_thread = threading.Thread(
                 target=_periodic_checkpoint, daemon=True,
@@ -1520,10 +1574,8 @@ def _run_agent_streaming(session_id, msg_text, model, workspace, stream_id, atta
         put('apperror', _apperror_payload)
     finally:
         # Stop periodic checkpoint thread if it was started (Issue #765)
-        try:
+        if _checkpoint_stop is not None:
             _checkpoint_stop.set()
-        except Exception:
-            pass
         _clear_thread_env()  # TD1: always clear thread-local context
         with STREAMS_LOCK:
             STREAMS.pop(stream_id, None)
