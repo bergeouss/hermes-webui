@@ -1560,6 +1560,18 @@ def _is_messaging_session_record(session) -> bool:
 
 
 def _session_requires_cli_metadata_lookup(session) -> bool:
+    """Predicate for the /api/session fast path.
+
+    Returns True when a session needs the (expensive) CLI metadata scan.
+    WebUI-native sessions return False and skip the scan entirely.
+
+    Note: Legacy imported sidecars that pre-date the ``read_only`` field
+    default to ``read_only=False`` in Session.__init__ (api/models.py:390).
+    This is safe because imported sidecars always set at least
+    ``is_cli_session=True`` and a source tag at import time
+    (api/routes.py:9061, api/routes.py:5568), so they are correctly
+    identified by the ``is_cli_session`` or source-field branches above.
+    """
     if not session:
         return False
 
