@@ -127,6 +127,10 @@ def _clarify_timeout_seconds(default: int = 120) -> int:
         return default
 
 
+_CANCEL_MARKER_PATTERNS = ('task cancelled', 'task canceled', 'response interrupted')
+"""Canonical substrings used to detect persisted cancel/interrupt markers."""
+
+
 def _classify_provider_error(err_str: str, exc=None, *, silent_failure: bool = False) -> dict:
     """Classify provider/agent failure text for WebUI apperror UX.
 
@@ -143,6 +147,7 @@ def _classify_provider_error(err_str: str, exc=None, *, silent_failure: bool = F
         or 'user canceled' in _err_lower
         or 'task cancelled' in _err_lower
         or 'task canceled' in _err_lower
+        or 'cancellederror' in _err_lower
         or (exc is not None and type(exc).__name__ in ('CancelledError', 'CanceledError'))
     )
     _is_interrupted = (
@@ -267,9 +272,7 @@ def _session_has_cancel_marker(session) -> bool:
                     parts.append(str(part.get('text') or part.get('content') or ''))
             text = '\n'.join(parts)
         normalized = text.strip().lower()
-        if 'task cancelled' in normalized or 'task canceled' in normalized:
-            return True
-        if 'response interrupted' in normalized:
+        if any(p in normalized for p in _CANCEL_MARKER_PATTERNS):
             return True
     return False
 
@@ -4619,7 +4622,7 @@ def cancel_stream(stream_id: str) -> bool:
                         if not isinstance(_m, dict) or _m.get('role') != 'assistant':
                             continue
                         _content = str(_m.get('content') or '').strip().lower()
-                        if 'task cancelled' in _content or 'task canceled' in _content or 'response interrupted' in _content:
+                        if any(p in _content for p in _CANCEL_MARKER_PATTERNS):
                             _cancel_marker_idx = _idx
                             break
                 _partial_already_present = False
