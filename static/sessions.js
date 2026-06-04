@@ -1051,6 +1051,16 @@ function _isMessagingSession(session) {
   return _MESSAGING_RAW_SOURCES.has(raw);
 }
 
+/**
+ * Returns true when a session originates from an external channel (CLI bridge,
+ * Discord, Telegram, Slack, etc.) and therefore needs a server-side import
+ * before the WebUI can read or send messages into it.
+ * Covers both legacy CLI sessions and messaging-source sessions.
+ */
+function _isExternalSession(session) {
+  return !!(session && (session.is_cli_session || _isMessagingSession(session)));
+}
+
 function _isReadOnlySession(session) {
   return !!(session && (session.read_only || session.is_read_only));
 }
@@ -3110,8 +3120,9 @@ function startGatewaySSE(){
           }
           // If the active session received new gateway messages, refresh the conversation view.
           // S.busy check prevents stomping on an in-progress WebUI response.
-          // is_cli_session check ensures we only poll import_cli for CLI-originated sessions.
-          if(S.session && !S.busy && S.session.is_cli_session){
+          // _isExternalSession covers CLI-originated and messaging-source sessions
+          // that need a server-side import before WebUI can read them.
+          if(S.session && !S.busy && _isExternalSession(S.session)){
             const changedIds = new Set((data.sessions||[]).map(s=>s.session_id));
             if(changedIds.has(S.session.session_id)){
               // Capture active session ID before async fetch — race guard.
@@ -4591,7 +4602,7 @@ function renderSessionListFromCache(){
         row.title=t('session_lineage_segment_open');
         row.onclick=async(e)=>{
           e.stopPropagation();
-          if(seg.is_cli_session){
+          if(_isExternalSession(seg)){
             try{await api('/api/session/import_cli',{method:'POST',body:JSON.stringify({session_id:seg.session_id})});}
             catch(_e){ /* read-only fallback */ }
           }
@@ -4618,7 +4629,7 @@ function renderSessionListFromCache(){
         row.title='Open child session';
         row.onclick=async(e)=>{
           e.stopPropagation();
-          if(child.is_cli_session){
+          if(_isExternalSession(child)){
             try{await api('/api/session/import_cli',{method:'POST',body:JSON.stringify({session_id:child.session_id})});}
             catch(_e){ /* read-only fallback */ }
           }
@@ -5008,8 +5019,9 @@ function renderSessionListFromCache(){
         _tapTimer=null;
         _lastTapTime=0;
         if(_renamingSid) return;
-        // For CLI sessions, import into WebUI store first (idempotent)
-        if(s.is_cli_session){
+        // For external sessions (CLI, Discord, Telegram, Slack), import into
+        // WebUI store first so /api/chat/start finds a persisted session.
+        if(_isExternalSession(s)){
           try{
             await api('/api/session/import_cli',{method:'POST',body:JSON.stringify({session_id:s.session_id})});
           }catch(e){ /* import failed -- fall through to read-only view */ }
