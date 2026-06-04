@@ -1,8 +1,9 @@
 """Content-Length header present on successful TTS responses (#3582).
 
-The HTTP/1.0 server cannot signal end-of-body via connection close without
-triggering a ~31 s client timeout.  Buffering all chunks before writing lets
-us include a Content-Length header so the browser can play the audio blob.
+HTTP/1.1 keep-alive without declared framing leaves the client unable to
+detect end-of-body, blocking until the ~31 s idle-timeout fires.  Buffering
+all chunks before writing lets us include a Content-Length header so the
+browser can play the audio blob immediately.
 """
 import io
 import json

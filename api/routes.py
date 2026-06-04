@@ -8932,8 +8932,8 @@ def _handle_tts(handler, parsed):
     intentional. All audio chunks are buffered before sending so that a
     Content-Length header can be included. The 5000-char cap bounds audio to
     roughly 1-5 MB, making full buffering safe. Without Content-Length the
-    HTTP/1.0 server leaves the response open until a ~31 s timeout fires, and
-    the browser cannot play the blob mid-stream.
+    HTTP/1.1 keep-alive without declared framing leaves the response open until
+    a ~31 s idle-timeout fires, and the browser cannot play the blob mid-stream.
     If the HTTP layer ever moves to asyncio we can adopt edge_tts's native
     async API at that time.
     """
@@ -9040,8 +9040,9 @@ def _handle_tts(handler, parsed):
         comm = edge_tts.Communicate(text, voice, **kwargs)
 
         # Buffer all audio chunks before responding so Content-Length is known.
-        # Without it the HTTP/1.0 server holds the connection open until a ~31 s
-        # timeout fires and the browser cannot play the resulting blob.
+        # Without it, HTTP/1.1 keep-alive without declared framing holds the
+        # connection open until a ~31 s idle-timeout fires and the browser cannot
+        # play the resulting blob.
         audio_buf = bytearray()
         for chunk in comm.stream_sync():
             if chunk.get("type") == "audio" and chunk.get("data"):
