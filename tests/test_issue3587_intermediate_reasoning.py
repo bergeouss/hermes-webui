@@ -175,3 +175,39 @@ class TestSettlementLoopForward:
             "Settlement loop must read from _reasoning_segments.get(idx) "
             "to retrieve the per-message reasoning trace"
         )
+
+
+# ── 5. Multi-turn offset prevents cross-turn reasoning clobber ──────────────
+
+
+class TestMultiTurnOffset:
+    """The settlement loop must skip prior-turn assistant messages so that
+    _reasoning_segments (indexed from 0 for this turn only) doesn't overwrite
+    reasoning stored on earlier turns."""
+
+    def _settlement_block(self):
+        src = read('api/streaming.py')
+        start = src.find('# #3587: use per-message segments')
+        assert start >= 0, 'Settlement block not found'
+        return src[start:start + 1500]
+
+    def test_settlement_computes_prev_asst_offset(self):
+        block = self._settlement_block()
+        assert '_prev_asst' in block, (
+            "Settlement loop must compute _prev_asst (count of assistant "
+            "messages in _previous_messages) to offset the segment index"
+        )
+
+    def test_settlement_skips_prior_turn_messages(self):
+        block = self._settlement_block()
+        assert re.search(r'if\s+_turn_idx\s*<\s*_prev_asst\s*:', block), (
+            "Settlement loop must skip prior-turn messages with "
+            "if _turn_idx < _prev_asst: continue"
+        )
+
+    def test_segment_index_subtracts_offset(self):
+        block = self._settlement_block()
+        assert re.search(r'_turn_idx\s*-\s*_prev_asst', block), (
+            "Segment index must subtract _prev_asst offset so indexing "
+            "starts at 0 for this turn's first assistant message"
+        )

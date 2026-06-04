@@ -6163,12 +6163,22 @@ def _run_agent_streaming(
                 # #3587: use per-message segments so intermediate assistant turns
                 # (before tool calls) each receive their own reasoning trace rather
                 # than all reasoning being written only to the last assistant message.
+                # Scope the walk to this turn's newly-appended assistant messages
+                # to prevent cross-turn reasoning clobber (multi-turn off-by-N).
                 if s.messages:
+                    _prev_asst = sum(
+                        1 for m in (_previous_messages or [])
+                        if isinstance(m, dict) and m.get('role') == 'assistant'
+                    )
                     _asst_count = 0
                     for _rm in s.messages:
                         if not (isinstance(_rm, dict) and _rm.get('role') == 'assistant'):
                             continue
-                        _seg_reasoning = _reasoning_segments.get(_asst_count, '')
+                        _turn_idx = _asst_count
+                        _asst_count += 1
+                        if _turn_idx < _prev_asst:
+                            continue  # prior-turn message — never touch its reasoning
+                        _seg_reasoning = _reasoning_segments.get(_turn_idx - _prev_asst, '')
                         _existing_reasoning = _seg_reasoning or _rm.get('reasoning') or ''
                         _content = _rm.get('content')
                         if isinstance(_content, str) and _content:
